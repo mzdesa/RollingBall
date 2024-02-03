@@ -1,76 +1,12 @@
-"""
-Define a controller for the snake
-"""
 import numpy as np
 import CalSim as cs
 import casadi as ca
 from scipy.spatial.transform import *
 
 
-class BallFBLinPos(cs.Controller):
+class BallCLFNH(cs.Controller):
     """
-    Define a position tracking feedback linearizing controller for the NH dynamics.
-    """
-    def __init__(self, observer, lyapunovBarrierList=None, trajectory=None, depthCam=None):
-        """
-        Init function for a min norm to full state linearization controller
-        Inputs:
-            observer (StateObserver): standard state observer
-        """
-        #first, call super init function on controller class
-        super().__init__(observer, lyapunovBarrierList=None, trajectory=None, depthCam=None)
-
-        #define desired position and rotation
-        self.rd = np.array([[5, 6, 0]]).T
-
-        #define constants
-        self.e3 = np.array([[0, 0, 1]]).T
-        self.e3Hat = cs.hat(self.e3)
-        self.I = np.eye(3)
-
-        #radius
-        self.rho = self.observer.dynamics.rho
-
-        #gain matrix
-        self.K = np.diag([1, 1, 0])
-    
-    def get_des_state(self, t):
-        """
-        Returns desired state at time t
-        """
-        r = 2
-        a = 2
-        rd = np.array([[r * np.cos(a*t) - r, r * np.sin(a*t), 0]]).T
-        rdDot = np.array([[-r*a*np.sin(a*t), r*a*np.cos(a*t), 0]]).T
-        # rd = self.rd
-        # rdDot = 0*self.rd
-        return rd, rdDot
-
-    def eval_input(self, t):
-        """
-        Evaluate the input.
-        Inputs:
-            t (float): current time in simulation
-        """
-        #get state
-        x = self.observer.get_state()
-        r = x[0: 3, 0].reshape((3, 1))
-        R = x[3:, 0].reshape((3, 3)).T
-
-        #get desired state
-        rd, rdDot = self.get_des_state(t)
-
-        #solve for omega
-        omega = -1/self.rho * R.T @ self.e3Hat @ (self.K @ (r - rd) + rdDot)
-        
-        #store the input
-        self._u = omega
-        return self._u
-    
-
-class BallFBLinPos(cs.Controller):
-    """
-    Define a position tracking feedback linearizing controller for the NH dynamics.
+    Define a position tracking CLF controller for the nonholonomic dynamics.
     """
     def __init__(self, observer, lyapunovBarrierList=None, trajectory=None, depthCam=None):
         """
@@ -83,6 +19,7 @@ class BallFBLinPos(cs.Controller):
 
         #define desired position and rotation
         self.rd = np.array([[5, 6, 0]]).T
+        # self.Rd = cs.calc_Rx(0.1) @ cs.calc_Ry(0.1)
 
         #define constants
         self.e3 = np.array([[0, 0, 1]]).T
@@ -92,24 +29,36 @@ class BallFBLinPos(cs.Controller):
         #radius
         self.rho = self.observer.dynamics.rho
 
-        #gain matrix
-        self.K = np.diag([1, 1, 0])
+        #clf constant
+        self.gamma = 1
+    
+    def calc_r_term(self, r, rd, R):
+        """
+        Calculate positio term in error
+        """
+        return -self.rho * (r - rd).T @ self.e3Hat @ R
+    
+    def calc_V(self, r, rd):
+        """
+        Calculate value of Lyapunov function
+        """
+        return 0.5 * np.linalg.norm(r - rd)**2
     
     def get_des_state(self, t):
         """
         Returns desired state at time t
         """
-        r = 2
-        a = 2
-        rd = np.array([[r * np.cos(a*t) - r, r * np.sin(a*t), 0]]).T
-        rdDot = np.array([[-r*a*np.sin(a*t), r*a*np.cos(a*t), 0]]).T
-        # rd = self.rd
-        # rdDot = 0*self.rd
+        # r = 1
+        # a = 1
+        # rd = np.array([[r * np.cos(a*t) - r, r * np.sin(a*t), 0]]).T
+        # rdDot = np.array([[-r*a*np.sin(a*t), r*a*np.cos(a*t), 0]]).T
+        rd = self.rd
+        rdDot = 0*self.rd
         return rd, rdDot
 
     def eval_input(self, t):
         """
-        Evaluate the input.
+        Evaluate the input to a snaks
         Inputs:
             t (float): current time in simulation
         """
@@ -121,16 +70,31 @@ class BallFBLinPos(cs.Controller):
         #get desired state
         rd, rdDot = self.get_des_state(t)
 
-        #solve for omega
-        omega = -1/self.rho * R.T @ self.e3Hat @ (self.K @ (r - rd) + rdDot)
+        #solve an optimization for u
+        opti = ca.Opti()
+        omega = opti.variable(3, 1)
+
+        #define cost function as min norm to Gamma input
+        cost = omega.T @ omega
+        
+        #define CLF constraint
+        opti.subject_to(-(r - rd).T @ rdDot + (-self.rho * (r - rd).T @ self.e3Hat @ R) @ omega
+                         <= -self.gamma * self.calc_V(r, self.rd))
+
+        #set up optimizatoin
+        opti.minimize(cost)
+        option = {"verbose": False, "ipopt.print_level": 0, "print_time": 0}
+        opti.solver("ipopt", option)
+        sol = opti.solve()
         
         #store the input
-        self._u = omega
+        self._u = sol.value(omega).reshape((3, 1))
         return self._u
     
-class BallCLFOrient(cs.Controller):
+    
+class BallFBLinOrient(cs.Controller):
     """
-    Define an orientation tracking CLF controller for the NH dynamics.
+    Define an orientation tracking feedback linearizing controller for the NH dynamics.
     """
     def __init__(self, observer, lyapunovBarrierList=None, trajectory=None, depthCam=None):
         """
@@ -142,6 +106,91 @@ class BallCLFOrient(cs.Controller):
         super().__init__(observer, lyapunovBarrierList=None, trajectory=None, depthCam=None)
 
         #define desired position and rotation
+        self.Rd = cs.calc_Rx(np.pi/2) @ cs.calc_Ry(np.pi/2) @ cs.calc_Rz(-np.pi/2)
+
+        #define constants
+        self.e3 = np.array([[0, 0, 1]]).T
+        self.e3Hat = cs.hat(self.e3)
+        self.I = np.eye(3)
+
+        #radius
+        self.rho = self.observer.dynamics.rho
+
+        #gain matrix
+        self.K = 1 * np.diag([1, 1, 1])
+
+        #set a tolerance for zero
+        self.tol = 1e-3
+
+        #Set times for trajectory -> control freq. is 50 hz.
+        self.times = np.arange(0, 10 + 1/50, 1/50).tolist()
+        
+        #define start & end quaternions and SLERP interpolation
+        x0 = self.observer.get_state()
+        R0 = x0[3:, 0].reshape((3, 3)).T
+        self.slerp = Slerp([0, 10], Rotation.from_matrix([R0, self.Rd]))
+        self.interp_rots = self.slerp(self.times).as_matrix()
+    
+    def get_des_orient(self, t):
+        """
+        Returns desired orientation at time t. Define a trajectory using the sim time.
+        """
+        index = int(t * 50)
+        Rd = self.interp_rots[index, :, :]
+        return Rd
+    
+    def get_xi_phi(self, R):
+        """
+        Calculates axis and angle corresponding to a rotation matrix R
+        """
+        phi = np.arccos((np.trace(R) - 1)/2)
+        if phi <= self.tol:
+            xi = np.zeros((3, 1))
+        else:
+            xi = 1/(2*np.sin(phi)) * np.array([[R[2, 1] - R[1, 2], R[0, 2] - R[2, 1], R[1, 0] - R[0, 1]]]).T
+        return xi, phi
+
+    def eval_input(self, t):
+        """
+        Evaluate the input.
+        Inputs:
+            t (float): current time in simulation
+        """
+        #get state
+        x = self.observer.get_state()
+        R = x[3:, 0].reshape((3, 3)).T
+
+        #convert R to its axis-angle representation
+        xi, phi = self.get_xi_phi(R)
+
+        #get desired state and its axis-angle representation
+        Rd = self.get_des_orient(t)
+        xid, phid = self.get_xi_phi(Rd)
+
+        #compute omega hat
+        omegaHat = cs.hat(xi * phi) @ (self.K @ (cs.hat(xi * phi) - cs.hat(xid * phid)))
+        omega = cs.vee_3d(omegaHat)
+        
+        #store the input
+        self._u = omega
+        return self._u
+    
+
+class BallCLFFull_Legacy(cs.Controller):
+    """
+    Define an orientation tracking feedback linearizing controller for the NH dynamics.
+    """
+    def __init__(self, observer, lyapunovBarrierList=None, trajectory=None, depthCam=None):
+        """
+        Init function for a min norm to full state linearization controller
+        Inputs:
+            observer (StateObserver): standard state observer
+        """
+        #first, call super init function on controller class
+        super().__init__(observer, lyapunovBarrierList=None, trajectory=None, depthCam=None)
+
+        #define desired position and rotation
+        self.rd = np.array([[1, 1, 0]]).T
         self.Rd = cs.calc_Rx(np.pi/4) @ cs.calc_Ry(np.pi/4) @ cs.calc_Rz(-np.pi/2)
 
         #define constants
@@ -159,10 +208,10 @@ class BallCLFOrient(cs.Controller):
         self.K = 1 * np.diag([1, 1, 1])
 
         #scaling in norms
-        self.ki = [1, 2, 3]
+        self.ki = [1, 1, 1, 2]
 
         #set CLF gamma
-        self.gamma = 1
+        self.gamma = 0.5
 
         #set tolerance on CLF constraint
         self.tol = 1e-4
@@ -180,28 +229,42 @@ class BallCLFOrient(cs.Controller):
         """
         return 0.5*np.linalg.norm((self.Rd - R) @ self.ei[i])**2
     
+    def calc_er(self, r):
+        """
+        Calculates CLF error to desired position.
+        """
+        return 0.5*np.linalg.norm(self.rd - r)
+    
     def calc_psi_i_dot(self, R, omega, i):
         """
         Calculate psi_i time derivative.
         """
         return ((self.Rd - R) @ self.ei[i]).T @ R @ cs.hat(self.ei[i]) @ omega
     
-    def calc_v(self, R):
+    def calc_er_dot(self, r, R, omega):
+        """
+        Calculate time derivative of position error function
+        """
+        return self.rho * (self.rd - r).T @ self.e3Hat @ R @ omega
+    
+    def calc_v(self, r, R):
         """
         Calculate Lyapunov function V
         """
         V = 0
         for i in range(3):
             V = V + self.ki[i] * self.calc_psi_i(R, i)
+        V = V + self.ki[3] * self.calc_er(r)
         return V
     
-    def calc_v_dot(self, R, omega):
+    def calc_v_dot(self, r, R, omega):
         """
         Returns derivative of V
         """
         vDot = 0
         for i in range(3):
             vDot = vDot + self.ki[i] * self.calc_psi_i_dot(R, omega, i)
+        vDot = vDot + self.ki[3] * self.calc_er_dot(r, R, omega)
         return vDot
 
     def eval_input(self, t):
@@ -212,6 +275,7 @@ class BallCLFOrient(cs.Controller):
         """
         #get state
         x = self.observer.get_state()
+        r = x[0:3].reshape((3, 1))
         R = x[3:, 0].reshape((3, 3)).T
 
         #create optimization for omega
@@ -219,8 +283,8 @@ class BallCLFOrient(cs.Controller):
         omega = opti.variable(3, 1)
 
         #enforce constraint
-        V = self.calc_v(R)
-        Vdot = self.calc_v_dot(R, omega)
+        V = self.calc_v(r, R)
+        Vdot = self.calc_v_dot(r, R, omega)
 
         #if V meets tolerance cutoff, return.
         if V <= self.tol:
@@ -244,94 +308,3 @@ class BallCLFOrient(cs.Controller):
         self._u = sol.value(omega).reshape((3, 1))
         return self._u
     
-class BallCLF(BallCLFOrient):
-    """
-    Define an orientation tracking feedback linearizing controller for the NH dynamics.
-    """
-    def __init__(self, observer, lyapunovBarrierList=None, trajectory=None, depthCam=None):
-        """
-        Init function for a min norm to full state linearization controller
-        Inputs:
-            observer (StateObserver): standard state observer
-        """
-        #first, call super init function on controller class
-        super().__init__(observer, lyapunovBarrierList=None, trajectory=None, depthCam=None)
-
-        #define desired position and rotation
-        self.rd = np.array([[1, 1, 0]]).T
-        self.Rd = cs.calc_Rx(np.pi/4) @ cs.calc_Ry(np.pi/4)
-
-        #scaling in norms
-        self.ki = [1, 1, 1]
-
-        #set tuning terms
-        self.gamma = 1
-        self.pr = 2 #tuning for relaxation
-        self.pR = 1 
-
-        #set tolerance on CLF constraint
-        self.tol = 1e-4
-
-        #define controller for "nominal" position tracking input
-        self.posControl = BallFBLinPos(observer, lyapunovBarrierList, trajectory, depthCam)
-
-    def calc_er(self, r):
-        """
-        Calculates CLF error to desired position.
-        """
-        return 0.5*np.linalg.norm(self.rd - r)
-    
-    def calc_er_dot(self, r, R, omega):
-        """
-        Calculate time derivative of position error function
-        """
-        return self.rho * (self.rd - r).T @ self.e3Hat @ R @ omega
-
-    def eval_input(self, t):
-        """
-        Evaluate the input.
-        Inputs:
-            t (float): current time in simulation
-        """
-        #get state
-        x = self.observer.get_state()
-        r = x[0:3].reshape((3, 1))
-        R = x[3:, 0].reshape((3, 3)).T
-
-        #create optimization for omega
-        opti = ca.Opti()
-        omega = opti.variable(3, 1)
-
-        #define relaxation variables for R and r
-        deltaR = opti.variable()
-        deltar = opti.variable()
-
-        #Get CLF for orientation
-        VR = self.calc_v(R)
-        VRDot = self.calc_v_dot(R, omega)
-        print("VR: ", VR)
-
-        #Get CLF for position
-        Vr = self.calc_er(r)        
-        VrDot = self.calc_er_dot(r, R, omega)
-        print("Vr: ", Vr)
-
-        #if V meets tolerance cutoff, return.
-        if VR <= self.tol:
-            self._u = np.zeros((3, 1))
-            return self._u
-        opti.subject_to(VRDot <= -self.gamma * VR + deltaR)
-        opti.subject_to(VrDot <= -self.gamma * Vr + deltar)
-
-        #define cost
-        cost = omega.T @ omega + self.pR * deltaR**2 + self.pr * deltar**2
-
-        #perform minimization
-        opti.minimize(cost)
-        option = {"verbose": False, "ipopt.print_level": 0, "print_time": 0}
-        opti.solver("ipopt", option)
-        sol = opti.solve()
-        
-        #store and return the input
-        self._u = sol.value(omega).reshape((3, 1))
-        return self._u

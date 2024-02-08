@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from dynamics_simulator import *
 import CalSim as cs
 from scipy.spatial.transform import Rotation as R
-from controller import *
+from nh_controllers import *
 
 #NONHOLONOMIC KINEMATICS SIMULATION
 
@@ -21,7 +21,7 @@ observerManager = cs.ObserverManager(ballDyn)
 #create a snake controller manager
 controllerManager = cs.ControllerManager(observerManager, EulerPlanner)
 
-#create a snake environment
+#create a ball environment
 env = cs.Environment(ballDyn, controllerManager, observerManager, T = 10)
 
 #run the simulation

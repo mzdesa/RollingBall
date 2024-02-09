@@ -276,7 +276,7 @@ class BallCLFOrientNH(cs.Controller):
         self.ki = [1, 2, 3]
 
         #set CLF gamma
-        self.gamma = 1
+        self.gamma = 10
 
         #set tolerance on CLF constraint
         self.tol = 1e-4
@@ -758,7 +758,7 @@ class BallFbLin(cs.Controller):
         super().__init__(observer, lyapunovBarrierList=None, trajectory=None, depthCam=None)
 
         #define desired position and rotation
-        self.rd = np.array([[0, 0, 0]]).T
+        self.rd = np.array([[1, 1, 0]]).T
         self.Rd = cs.calc_Rx(np.pi/4) @ cs.calc_Ry(np.pi/4) @ cs.calc_Rz(-np.pi/2)
 
         #define constants
@@ -786,8 +786,8 @@ class BallFbLin(cs.Controller):
         self.omegaController.Rd = self.Rd
 
         #Define gain matrices
-        self.Kp = 4*np.diag([1, 1, 1])
-        self.Kd = 4*np.diag([1, 1, 1])
+        self.Kp = 100*np.diag([1, 1, 1])
+        self.Kd = 20*np.diag([1, 1, 1])
 
         #Define cutoff matrix
         self.A = np.array([[1, 0], [0, 1], [0, 0]])
@@ -801,31 +801,36 @@ class BallFbLin(cs.Controller):
         Returns desired position, velocity, and angular velocity at time t
         """
         #return the omega input
-        return self.rd, np.zeros((3, 1)), self.omegaController.eval_input(t)
+        x = self.observer.get_state()
+        r, rDot, R, omega = self.state_vec_2_tuple(x)
+        return self.rd, 1/10 * (self.rd - r), self.omegaController.eval_input(t)
     
     def calc_K(self, R, reduced = False):
         """
         Calculate K term in dynamics
         """
-        #form blocks in the matrix
-        k1 = self.A.T @ (1/self.m * (self.I - self.P)) @ self.A
-        k2 = self.A.T @ (-1/self.m * self.P @ self.G(R))
-        k3 = (1/self.c * self.rho * R.T @ self.e3Hat @ self.P) @ self.A
-        k4 = 1/self.c * (self.I + self.rho * R.T @ self.e3Hat @ self.P @ self.G(R))
+        if reduced:
+            #form blocks in the matrix
+            k1 = self.A.T @ (1/self.m * (self.I - self.P)) @ self.A
+            k2 = self.A.T @ (-1/self.m * self.P @ self.G(R))
+            k3 = (1/self.c * self.rho * R.T @ self.e3Hat @ self.P) @ self.A
+            k4 = 1/self.c * (self.I + self.rho * R.T @ self.e3Hat @ self.P @ self.G(R))
 
-        #Assemble the reduced order matrix
-        Kred = np.vstack((np.hstack((np.eye(2), k2 @ np.linalg.inv(k4))), 
-                          np.hstack((k3 @ np.linalg.inv(k1), np.eye(3)))))
-        if np.linalg.matrix_rank(Kred) != 5:
-            print(np.linalg.matrix_rank(Kred))
+            #Assemble the reduced order matrix
+            Kred = np.vstack((np.hstack((np.eye(2), k2 @ np.linalg.inv(k4))), 
+                            np.hstack((k3 @ np.linalg.inv(k1), np.eye(3)))))
+            if np.linalg.matrix_rank(Kred) != 5:
+                print(np.linalg.matrix_rank(Kred))
 
-        #check matrix rank
-        if not reduced:
+            return k1, k2, k3, k4, Kred
+        else:
+            k1 = 1/self.m * (self.I - self.P)
+            k2 = -1/self.m * self.P @ self.G(R)
+            k3 = 1/self.c * self.rho * R.T @ self.e3Hat @ self.P
+            k4 = 1/self.c * (self.I + self.rho * R.T @ self.e3Hat @ self.P @ self.G(R))
             K1 = np.hstack((k1, k2))
             K2 = np.hstack((k3, k4))
             return np.vstack((K1, K2))
-        else:
-            return k1, k2, k3, k4, Kred
     
     def eval_nu(self, t, r, rDot, R, omega, rd, vd, omegad):
         """
@@ -836,8 +841,13 @@ class BallFbLin(cs.Controller):
         v1 = self.A.T @ (self.Kp @ (rd - r) + self.Kd @ (vd - rDot))
         v2 = self.Kp @ (omegad - omega)
 
-        nu = np.linalg.pinv(Kred) @ (np.vstack((v1, v2)))
+        #SET PINV CUTOFF
+        rcond = 1e-4
+        nu = np.linalg.pinv(Kred, rcond) @ (np.vstack((v1, v2)))
         return nu[0:2], nu[2:]
+    
+    def disp_rotation_error(self, R, Rd):
+        print("Rotation Error: ", np.trace(self.I - Rd.T @ R))
         
     def eval_input(self, t):
         """
@@ -852,16 +862,10 @@ class BallFbLin(cs.Controller):
         #get desired position, velocity
         rd, vd, omegaD = self.get_des_state(t)
 
-        #compute K matrix
-        k1, k2, k3, k4, Kred = self.calc_K(R, reduced = True)
-        nu1, nu2 = self.eval_nu(t, r, rDot, R, omega, rd, vd, omegaD)
-        fPrime = np.linalg.inv(k1) @ nu1
-        f = np.vstack((fPrime, 0))
-        M = np.linalg.inv(k4) @ nu2
-        u = np.vstack((f, M))
-        if np.linalg.norm(u) >= 100:
-            print("Pinv Error")
-            self._u = np.random.rand(6, 1)
-            return self._u
-        self._u = u
+        self.disp_rotation_error(R, self.Rd)
+
+        K = self.calc_K(R)
+        v1 = (self.Kp @ (rd - r) + self.Kd @ (vd - rDot))
+        v2 = self.Kp @ (omegaD - omega)
+        self._u = np.linalg.pinv(K, rcond = 1e-5) @ np.vstack((v1, v2))
         return self._u

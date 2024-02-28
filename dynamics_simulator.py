@@ -246,6 +246,10 @@ class RollingBallNH(cs.Dynamics):
         Inputs:
             x0 (9x1 NumPy Array): (x, xDot, R, omega) initial condition
         """
+        #Define a desired rotation/position attribute (used for plotting in control)
+        self.Rd = None
+        self.rd = None
+
         #Define e3 basis vector and its hat map
         self.e3 = np.array([[0, 0, 1]]).T
         self.e3Hat = cs.hat(self.e3)
@@ -302,6 +306,18 @@ class RollingBallNH(cs.Dynamics):
         """
         return RollingBall.rot_2_euler(self, Rdata)
     
+    def calc_rotation_error(self, R, Rd):
+        return np.trace(self.I - Rd.T @ R)
+    
+    def calc_psi_hist(self, Rdata):
+        #extract rotation matrices
+        PsiHist = []
+        for i in range(Rdata.shape[1]):
+            #extract rotation matrix
+            Ri = Rdata[:, i].reshape((3, 3)).T
+            PsiHist.append(self.calc_rotation_error(Ri, self.Rd))
+        return PsiHist
+    
     def show_plots(self, xData, uData, tData, stateLabels=None, inputLabels=None, obsManager=None):
         """
         Plot the system behavior over time. Plots XY trajectory and Euler Angles.
@@ -310,6 +326,7 @@ class RollingBallNH(cs.Dynamics):
         x0Hist = xData[0, :].tolist()
         y0Hist = xData[1, :].tolist()
         z0Hist = xData[2, :].tolist()
+        tHist = tData[0, :]
 
         #extract rotation matrices
         Rhist = xData[3:, :]
@@ -342,6 +359,27 @@ class RollingBallNH(cs.Dynamics):
         plt.legend(["wx", "wy", "wz"])
         plt.xlabel("Time (s)")
         plt.ylabel("Angular Velocity (Rad/s)")
+        plt.show()
+
+        #Plot rotation error
+        if self.Rd is not None:
+            #compute rotation error across time
+            psiHist = self.calc_psi_hist(Rhist)
+            plt.plot(tHist, psiHist)
+            plt.xlabel("Time (s)")
+            plt.ylabel("Psi")
+            plt.title("Evolution of Orientation Error")
+            plt.show()
+
+        #plot the euler angles
+        showEuler = False
+        if showEuler:
+            plt.plot(tHist, XEuler)
+            plt.plot(tHist, YEuler)
+            plt.plot(tHist, ZEuler)
+            plt.title("Evolution of XYZ Euler Angles")
+            plt.legend(["X", "Y", "Z"])
+            plt.xlabel("Time (s)")
         plt.show()
 
     def gen_sphere(self, R, r):

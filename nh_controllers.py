@@ -5,6 +5,7 @@ import numpy as np
 import CalSim as cs
 import casadi as ca
 from scipy.spatial.transform import *
+from scipy.linalg import expm, logm
 
 
 class BallFBLinPos(cs.Controller):
@@ -492,4 +493,212 @@ class EulerPlanner(cs.Controller):
             print("***********************")
 
         #return the input
+        return self._u
+    
+
+class BallMPC(cs.Controller):
+    """
+    Define an MPC snake controller
+    """
+    def __init__(self, observer, lyapunovBarrierList=None, trajectory=None, depthCam=None):
+        """
+        Init function for a min norm to full state linearization controller
+        Inputs:
+            observer (StateObserver): standard state observer
+        """
+        #first, call super init function on controller class
+        super().__init__(observer, lyapunovBarrierList=None, trajectory=None, depthCam=None)
+
+        #define weights
+        self.Qp = np.eye(2)
+        self.Qxi = np.eye(3)
+        self.R = 0.1 * np.eye(3)
+
+        #get radius of sphere
+        self.rho = self.observer.dynamics.rho
+
+        #define hat of e3, projection
+        self.e3 = np.array([[0, 0, 1]]).T
+        self.e3Hat = cs.hat(self.e3)
+        self.ProjPi = np.array([[1, 0, 0], [0, 1, 0]])
+
+        #define current state
+        x0 = self.observer.get_state()
+        self.r0 = x0[0:3].reshape((3, 1))
+        self.R0 = x0[3:, 0].reshape((3, 3)).T
+
+        #define desired position and rotation
+        self.rd = np.array([[1, 1, 0]]).T
+        self.pd = self.ProjPi @ self.rd
+        self.Rd = cs.calc_Rx(np.pi/4) @ cs.calc_Ry(np.pi/4)
+        self.xid = self.rot_2_xi(self.Rd)
+
+        #define discretization time step
+        self.dt = 1/10 #run at 50 Hz
+
+        #define MPC horizon using a lookahead time
+        T = 1.5 #lookahead time
+        self.Nmpc = int(T/self.dt)
+        
+        #define dynamics function of eta
+        self.A = lambda eta: -self.rho * self.ProjPi @ self.e3Hat @ expm(cs.hat(eta))
+
+        #Set desired rotation in dynamics (for plotting purposes)
+        self.observer.dynamics.Rd = self.Rd
+        self.observer.dynamics.rd = self.rd
+
+    def rot_2_xi(self, R):
+        """
+        Convert a rotation matrix to xi coordinates
+        """
+        #take vee map of log of matrices
+        return cs.vee_3d(logm(self.R0.T @ R))
+
+    def cas_2_np(self, x):
+        """
+        Convert a casadi vector to a numpy array
+        """
+        #extract the shape of the casadi vector
+        shape = x.shape
+
+        #define a numpy vector
+        xnp = np.zeros(shape)
+
+        #fill in the entries
+        for i in range(shape[0]):
+            print(x[i, 0])
+            xnp[i, 0] = x[i, 0]
+
+        #return the numpy vector
+        return xnp
+    
+    def np_2_cas(self, x):
+        """
+        Convert a numpy array to casadi MX
+        """
+        shape = x.shape
+        xMX = ca.MX.zeros(shape[0], shape[1])
+        for i in range(x.shape[0]):
+            for j in range(x.shape[1]):
+                #store xij in a casadi MX matrix
+                xMX[i, j] = x[i, j]
+        return xMX
+    
+    def hat_cas(self, eta):
+        """
+        Computes the hat map of a casadi variable eta
+        """
+        etaHat = ca.MX.zeros(3, 3)
+        etaHat[0, 1], etaHat[0, 2] = -eta[2], eta[1]
+        etaHat[1, 0], etaHat[1, 2] = eta[2], -eta[0]
+        etaHat[2, 0], etaHat[2, 1] = -eta[1], eta[0]
+        return etaHat
+    
+    def expm_cas(self, eta):
+        """
+        Computes the matrix exponential of a casadi variable eta
+        -> note: modify denom to avoid divide by zero
+        """
+        etaHat = self.hat_cas(eta)
+        theta = ca.norm_2(eta)
+        return ca.MX.eye(3) + ca.sin(theta)/(theta) * etaHat + (1 - ca.cos(theta))/(theta)**2 * etaHat @ etaHat
+    
+    def vec_2_matr(self, r):
+        R = ca.MX.zeros(3, 3)
+        R[0, 0] = r[0]
+        R[1, 0] = r[1]
+        R[2, 0] = r[2]
+        R[0, 1] = r[3]
+        R[1, 1] = r[4]
+        R[2, 1] = r[5]
+        R[0, 2] = r[6]
+        R[1, 2] = r[7]
+        R[2, 2] = r[8]
+        return R
+    
+    def matr_2_vec(self, R):
+        r = ca.MX.zeros(9, 1)
+        r[0] = R[0, 0]
+        r[1] = R[1, 0]
+        r[2] = R[2, 0]
+        r[3] = R[0, 1]
+        r[4] = R[1, 1]
+        r[5] = R[2, 1]
+        r[6] = R[0, 2]
+        r[7] = R[1, 2]
+        r[8] = R[2, 2]
+        return r
+    
+    def matr_2_vec_np(self, R):
+        r = np.zeros(9, )
+        r[0] = R[0, 0]
+        r[1] = R[1, 0]
+        r[2] = R[2, 0]
+        r[3] = R[0, 1]
+        r[4] = R[1, 1]
+        r[5] = R[2, 1]
+        r[6] = R[0, 2]
+        r[7] = R[1, 2]
+        r[8] = R[2, 2]
+        return r
+    
+    def calc_rotation_error(self, R):
+        return ca.trace(ca.MX.eye(3) - self.np_2_cas(self.Rd).T @ R)
+
+    def eval_input(self, t):
+        """
+        Evaluate the input to a snake
+        Inputs:
+            t (float): current time in simulation
+        """
+        #get state vector from observer
+        x = self.observer.get_state()
+        r = x[0: 3, 0].reshape((3, 1))
+        R = x[3:, 0].reshape((3, 3)).T
+
+        #convert into p, xi coordinates
+        p = self.ProjPi @ r
+        # xi = self.rot_2_xi(R)
+
+        #Define MPC optimization
+        opti = ca.Opti()
+        omegak = opti.variable(3, self.Nmpc - 1)
+        pk = opti.variable(2, self.Nmpc)
+        # xik = opti.variable(3, self.Nmpc)
+        rk = opti.variable(9, self.Nmpc)
+
+        #define cost function as min norm to Gamma input
+        cost = 0
+        for k in range(self.Nmpc - 1):
+            inputCost = omegak[:, k].T @ self.R @ omegak[:, k]
+            # stateCost = (self.xid - xik[:, k]).T @ self.Qxi @ (self.xid - xik[:, k]) + (self.pd - pk[:, k]).T @ self.Qp @ (self.pd - pk[:, k])
+            stateCost = self.calc_rotation_error(self.vec_2_matr(rk[:, k])) + (self.pd - pk[:, k]).T @ self.Qp @ (self.pd - pk[:, k])
+            cost = cost + inputCost + stateCost
+        # cost = cost + (self.xid - xik[:, -1]).T @ self.Qxi @ (self.xid - xik[:, -1]) +  (self.pd - pk[:, -1]).T @ self.Qp @ (self.pd - pk[:, -1])
+        cost = cost + self.calc_rotation_error(self.vec_2_matr(rk[:, -1]))  + (self.pd - pk[:, -1]).T @ self.Qp @ (self.pd - pk[:, -1])
+
+        #set initial condition constraint
+        # opti.subject_to(xik[:, 0] == xi)
+        opti.subject_to(rk[:, 0] == self.matr_2_vec_np(self.R0))
+        opti.subject_to(pk[:, 0] == p)
+
+        #set dynamics constraints
+        for k in range(self.Nmpc - 1):
+            #set dynamics constraints
+            # opti.subject_to(pk[:, k+1] == pk[:, k] + self.dt * (-self.rho * self.ProjPi @ self.e3Hat @ self.expm_cas(xik[:, k]) @ omegak[:, k]))
+            # opti.subject_to(xik[:, k+1] == xik[:, k] + self.dt * omegak[:, k])
+
+            #set dynamics constraint
+            opti.subject_to(pk[:, k+1] == pk[:, k] + self.dt * (-self.rho * self.ProjPi @ self.e3Hat @ R[...]) @ omegak[:, k])
+            opti.subject_to(rk[:, k+1] == rk[:, k] + self.dt * self.matr_2_vec(self.vec_2_matr(rk[:, k]) @ self.hat_cas(omegak[:, k])))
+        
+        #set up optimizatoin
+        opti.minimize(cost)
+        option = {"verbose": False, "ipopt.print_level": 0, "print_time": 0}
+        opti.solver("ipopt", option)
+        sol = opti.solve()
+        
+        #store the input
+        uMatrix = sol.value(omegak)
+        self._u = uMatrix[:, 0].reshape((3, 1))
         return self._u

@@ -19,7 +19,7 @@ ballDyn = RollingBallNH(x0)
 observerManager = cs.ObserverManager(ballDyn)
 
 #create a snake controller manager
-controllerManager = cs.ControllerManager(observerManager, EulerPlanner)
+controllerManager = cs.ControllerManager(observerManager, BallMPC)
 
 #create a ball environment
 env = cs.Environment(ballDyn, controllerManager, observerManager, T = 10)

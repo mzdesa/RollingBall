@@ -667,6 +667,10 @@ class BallMPC(cs.Controller):
         # xik = opti.variable(3, self.Nmpc)
         rk = opti.variable(9, self.Nmpc)
 
+        opti.set_initial(omegak, ca.DM.ones(3, self.Nmpc-1))
+        opti.set_initial(pk, ca.DM.ones(2, self.Nmpc))
+        opti.set_initial(rk, ca.DM.ones(9, self.Nmpc))
+
         #define cost function as min norm to Gamma input
         cost = 0
         for k in range(self.Nmpc - 1):

@@ -13,11 +13,11 @@ x0 = np.zeros((2, 1))
 xD = np.zeros((2, 1))
 
 #compute the log of RN to get the boundary conditions for omega
-xiD = cs.vee_3d(logm(RN))
+xiD = cs.vee_3d(logm(RN @ R0.T)) #Not correct! should be 
 
 #set horizon/discretization params
 N = 100
-h = 1/50
+h = 1/20
 
 #set up optimization problem
 opti = ca.Opti()
@@ -32,6 +32,8 @@ A[1, 0] = -1
 #set up boundary conditions
 opti.subject_to(xk[:, 0] ==  x0) #enforce initial constraint
 opti.subject_to(xik[:, 0] == np.zeros((3, 1)))
+# opti.subject_to(xk[:, -1] ==  xD)
+# opti.subject_to(xik[:, -1] == xiD)
 
 #set up x dynamics in terms of u
 for j in range(N-1):
@@ -55,7 +57,7 @@ for i in range(N-1):
     cost = cost + (xik[:, i] - xiD).T @ (xik[:, i] - xiD) + (xk[:, i] - xD).T @ (xk[:, i] - xD) + uk[:, i].T @ uk[:, i]
 
 #solve problem
-opti.minimize(cost)
+# opti.minimize(cost)
 opti.solver("ipopt")
 sol = opti.solve()
 print(sol.value(uk))

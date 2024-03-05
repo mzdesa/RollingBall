@@ -433,3 +433,201 @@ class RollingBallNH(cs.Dynamics):
         num_frames = xData.shape[1]-1
         anim = animation.FuncAnimation(fig = fig, func = update, frames=num_frames, interval=1/FREQ*1000)
         plt.show()
+
+class RollingBallNHSimple(cs.Dynamics):
+    """
+    Rolling Ball Nonholonomic dynamics - Simple dynamics -> Right Invariant system
+    transformed to have unit radius
+    """
+    def __init__(self, x0):
+        """
+        Init function for rolling ball dynamics objet
+        Inputs:
+            x0 (9x1 NumPy Array): (x, xDot, R, omega) initial condition
+        """
+        #Define a desired rotation/position attribute (used for plotting in control)
+        self.Rd = None
+        self.rd = None
+
+        #Define e3 basis vector and its hat map
+        self.e3 = np.array([[0, 0, 1]]).T
+        self.e3Hat = cs.hat(self.e3)
+        self.I = np.eye(3)
+
+        #define ball radius
+        self.rho = 1
+
+        #define A matrix
+        self.A = np.array([[0, 1, 0], [-1, 0, 0]])
+
+        #Implement the state dynamics
+        def f(x, u, t):
+            """
+            Dynamics function
+            x = (r, R)
+            u = (omega)
+            """
+            #extract components of state vector
+            r, R = self.state_vec_2_tuple(x)
+
+            #compute dynamics
+            rDot = self.A @ u
+            RDot = cs.hat(u) @ R
+
+            #Reshape rotation matrix into a vector
+            RDot = (RDot.T).reshape((9, 1))
+            
+            #stack the dynamics terms and return xDot
+            xDot = np.vstack((rDot, RDot))
+            return xDot
+        
+        #Call the super init function -> default to one ball
+        super().__init__(x0, 11, 3, f, N = 1)
+        
+    def state_vec_2_tuple(self, x):
+        """
+        Converts the state vector into the tuple (r, rDot, R, omega)
+        Inputs:
+            x (11x1 NumPy Array): state vector of system
+        Reutns:
+            r, R: Tuple containing vectors/matrices
+        """
+        #assemble the state vector
+        r = x[0: 2, 0].reshape((2, 1))
+        R = x[2:, 0].reshape((3, 3)).T
+
+        #return tuple
+        return r, R
+
+    def rot_2_euler(self, Rdata):
+        """
+        Converts R data to a list of XYZ Euler Angles
+        """
+        return RollingBall.rot_2_euler(self, Rdata)
+    
+    def calc_rotation_error(self, R, Rd):
+        return np.trace(self.I - Rd.T @ R)
+    
+    def calc_psi_hist(self, Rdata):
+        #extract rotation matrices
+        PsiHist = []
+        for i in range(Rdata.shape[1]):
+            #extract rotation matrix
+            Ri = Rdata[:, i].reshape((3, 3)).T
+            PsiHist.append(self.calc_rotation_error(Ri, self.Rd))
+        return PsiHist
+    
+    def show_plots(self, xData, uData, tData, stateLabels=None, inputLabels=None, obsManager=None):
+        """
+        Plot the system behavior over time. Plots XY trajectory and Euler Angles.
+        """
+        #extract the states and times
+        x0Hist = xData[0, :].tolist()
+        y0Hist = xData[1, :].tolist()
+        tHist = tData[0, :]
+
+        #extract rotation matrices
+        Rhist = xData[2:, :]
+        XEuler, YEuler, ZEuler = self.rot_2_euler(Rhist)
+
+        #plot the positions versus time
+        plt.plot(x0Hist, y0Hist)
+        plt.title("Spatial Trajectory of Ball")
+        plt.xlabel("X (m)")
+        plt.ylabel("Y (m)")
+        plt.show()
+
+        #plot the euler angles
+        plt.plot(tData[0, :], XEuler)
+        plt.plot(tData[0, :], YEuler)
+        plt.plot(tData[0, :], ZEuler)
+        plt.title("Evolution of XYZ Euler Angles")
+        plt.legend(["X", "Y", "Z"])
+        plt.xlabel("Time (s)")
+        plt.show()
+
+        #plot the inputs
+        omega1 = uData[0, :].tolist()
+        omega2 = uData[1, :].tolist()
+        omega3 = uData[2, :].tolist()
+        plt.plot(tData[0, :], omega1)
+        plt.plot(tData[0, :], omega2)
+        plt.plot(tData[0, :], omega3)
+        plt.title("Evolution of Angular Velocity Inputs")
+        plt.legend(["wx", "wy", "wz"])
+        plt.xlabel("Time (s)")
+        plt.ylabel("Angular Velocity (Rad/s)")
+        plt.show()
+
+        #Plot rotation error
+        if self.Rd is not None:
+            #compute rotation error across time
+            psiHist = self.calc_psi_hist(Rhist)
+            plt.plot(tHist, psiHist)
+            plt.xlabel("Time (s)")
+            plt.ylabel("Psi")
+            plt.title("Evolution of Orientation Error")
+            plt.show()
+
+        #plot the euler angles
+        showEuler = False
+        if showEuler:
+            plt.plot(tHist, XEuler)
+            plt.plot(tHist, YEuler)
+            plt.plot(tHist, ZEuler)
+            plt.title("Evolution of XYZ Euler Angles")
+            plt.legend(["X", "Y", "Z"])
+            plt.xlabel("Time (s)")
+        plt.show()
+
+    def gen_sphere(self, R, r):
+        """
+        Generate mesh for sphere of radius rho at the origin with orientation R and position r
+        """
+        return RollingBall.gen_sphere(self, R, r)
+
+    def show_animation(self, xData, uData, tData, animate = True, obsManager = None):
+        #Set constant animtion parameters
+        FREQ = 50 #control frequency, same as data update frequency
+        
+        fig = plt.figure()
+        ax = fig.add_subplot(111,projection='3d')
+
+        #set axis min max limits
+        x0Hist = xData[0, :].tolist()
+        xMin, xMax = np.min(x0Hist), np.max(x0Hist)
+        xMin -= self.rho
+        xMax += self.rho
+        y0Hist = xData[1, :].tolist()
+        yMin, yMax = np.min(y0Hist), np.max(y0Hist)
+        yMin -= self.rho
+        yMax += self.rho
+        zMax = 5
+
+        def update(idx):
+            ax.cla()
+
+            #set axis aspect ratio & limits
+            ax.set_box_aspect((1, (yMax - yMin)/(xMax - xMin), zMax/(xMax - xMin)))
+            ax.set_xlim(xMin, xMax)
+            ax.set_ylim(yMin, yMax)
+            ax.set_zlim(0, zMax)
+
+            #set title
+            ax.set_title("Trajectory of Ball")
+
+            #get state and convert to r, rDot, R, omega
+            state = xData[:, idx].reshape((self.singleStateDimn, 1))
+            r, R = self.state_vec_2_tuple(state)
+
+            #generate sphere -> append a zero to the position for z
+            x, y, z = self.gen_sphere(R, np.vstack((r, 0)))
+
+            #plot the 3D surface on the axes
+            ax.plot_surface(x, y, z, cmap=plt.cm.viridis, linewidth=0.1)
+
+            return fig,
+    
+        num_frames = xData.shape[1]-1
+        anim = animation.FuncAnimation(fig = fig, func = update, frames=num_frames, interval=1/FREQ*1000)
+        plt.show()

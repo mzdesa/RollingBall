@@ -631,3 +631,122 @@ class RollingBallNHSimple(cs.Dynamics):
         num_frames = xData.shape[1]-1
         anim = animation.FuncAnimation(fig = fig, func = update, frames=num_frames, interval=1/FREQ*1000)
         plt.show()
+
+class RollingBallNHQuat(cs.Dynamics):
+    """
+    Rolling Ball Nonholonomic dynamics - Simple dynamics -> Quaternion, unit radius ball.
+    """
+    def __init__(self, x0):
+        """
+        Init function for rolling ball dynamics objet
+        Inputs:
+            x0 (6x1 NumPy Array): (x, q) initial condition
+            Note: q is a quaternion of the form (q0, qVec)
+        """
+        #Define a desired rotation/position attribute (used for plotting in control)
+        self.qd = None
+        self.rd = None
+
+        #Define e3 basis vector and its hat map
+        self.I = np.eye(3)
+
+        #define ball radius
+        self.rho = 1
+
+        #define A matrix as a funcntion of the quaternion
+        Atop = np.array([[0, 1, 0], [-1, 0, 0]]) #position dynamics A
+        self.A = lambda q: np.vstack((Atop, 0.5* q[1:].T, 0.5*(q[0, 0] * self.I + cs.hat(q[1:]))))
+
+        #Implement the state dynamics
+        def f(x, u, t):
+            """
+            Dynamics function
+            x = (x, q)
+            u = (omega)
+            """
+            #extract components of state vector
+            q = x[2:]
+            x = x[0:2]
+
+            #stack the dynamics terms and return xDot
+            xDot = self.A(q) @ u
+            return xDot
+        
+        #Call the super init function -> default to one ball
+        super().__init__(x0, 6, 3, f, N = 1)
+
+
+    def show_plots(self, xData, uData, tData, stateLabels=None, inputLabels=None, obsManager=None):
+        """
+        Plot the system behavior over time. Plots XY trajectory and Euler Angles.
+        """
+        super().show_plots(xData, uData, tData)
+
+        #extract the states and times
+        x0Hist = xData[0, :].tolist()
+        y0Hist = xData[1, :].tolist()
+        tHist = tData[0, :]
+
+        #plot the positions versus time
+        plt.plot(x0Hist, y0Hist)
+        plt.title("Spatial Trajectory of Ball")
+        plt.xlabel("X (m)")
+        plt.ylabel("Y (m)")
+        plt.show()
+
+    def gen_sphere(self, R, r):
+        """
+        Generate mesh for sphere of radius rho at the origin with orientation R and position r
+        """
+        return RollingBall.gen_sphere(self, R, r)
+
+    def show_animation(self, xData, uData, tData, animate = True, obsManager = None):
+        #Set constant animtion parameters
+        FREQ = 50 #control frequency, same as data update frequency
+        
+        fig = plt.figure()
+        ax = fig.add_subplot(111,projection='3d')
+
+        #set axis min max limits
+        x0Hist = xData[0, :].tolist()
+        xMin, xMax = np.min(x0Hist), np.max(x0Hist)
+        xMin -= self.rho
+        xMax += self.rho
+        y0Hist = xData[1, :].tolist()
+        yMin, yMax = np.min(y0Hist), np.max(y0Hist)
+        yMin -= self.rho
+        yMax += self.rho
+        zMax = 5
+
+        def update(idx):
+            ax.cla()
+
+            #set axis aspect ratio & limits
+            ax.set_box_aspect((1, (yMax - yMin)/(xMax - xMin), zMax/(xMax - xMin)))
+            ax.set_xlim(xMin, xMax)
+            ax.set_ylim(yMin, yMax)
+            ax.set_zlim(0, zMax)
+
+            #set title
+            ax.set_title("Trajectory of Ball")
+
+            #get state and convert to r, rDot, R, omega
+            state = xData[:, idx].reshape((self.singleStateDimn, 1))
+            q = state[2:]
+            x = state[0:2]
+
+            #convert q to a rotation
+            qSP = np.vstack((q[1:], q[0])).reshape(4, )
+            R = Rsp.from_quat(qSP).as_matrix()
+
+            #generate sphere -> append a zero to the position for z
+            x, y, z = self.gen_sphere(R, np.vstack((x, 0)))
+
+            #plot the 3D surface on the axes
+            ax.plot_surface(x, y, z, cmap=plt.cm.viridis, linewidth=0.1)
+
+            return fig,
+    
+        num_frames = xData.shape[1]-1
+        anim = animation.FuncAnimation(fig = fig, func = update, frames=num_frames, interval=1/FREQ*1000)
+        plt.show()
